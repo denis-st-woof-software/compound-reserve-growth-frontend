@@ -1,4 +1,11 @@
-import React, { memo, useCallback, useMemo, useReducer, useState } from 'react';
+import React, {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useMemo,
+  useReducer,
+  useState
+} from 'react';
 import { CSVLink } from 'react-csv';
 
 import ChartIconToggle from '@/components/ChartIconToggle/ChartIconToggle';
@@ -47,10 +54,12 @@ interface SelectedOptionsState {
 
 const groupByOptions = ['None', 'Asset Type', 'Chain', 'Market'];
 
-const groupByPathMapping: Record<string, string> = {
-  'Asset Type': 'source.asset.type',
-  Chain: 'source.network',
-  Market: 'source.market'
+type GroupByField = 'assetTypeName' | 'network' | 'marketName';
+
+const groupByFieldMapping: Partial<Record<string, GroupByField>> = {
+  'Asset Type': 'assetTypeName',
+  Chain: 'network',
+  Market: 'marketName'
 };
 
 const toUtcDateSeconds = (dateString: string, isEndOfDay = false) => {
@@ -72,9 +81,15 @@ const formatDateInputValue = (timestampSeconds: number) => {
   return new Date(timestampSeconds * 1000).toISOString().split('T')[0];
 };
 
-const getValueByPath = (obj: any, path: string): any => {
-  return path.split('.').reduce((acc, part) => acc && acc[part], obj);
-};
+interface NormalizedItem {
+  date: number;
+  dateKey: string;
+  value: number;
+  network: string;
+  marketName: string;
+  symbolName: string;
+  assetTypeName: string;
+}
 
 interface StackedChartData {
   date: string;
@@ -161,6 +176,8 @@ const CompoundFeeRevenueRecieved = ({
     endDate: ''
   });
 
+  const deferredDateRange = useDeferredValue(dateRange);
+
   const [resetHiddenKey, setResetHiddenKey] = useState(0);
 
   const initialState: SelectedOptionsState = useMemo(
@@ -208,20 +225,97 @@ const CompoundFeeRevenueRecieved = ({
   );
 
   const {
+    normalizedData,
     chainOptions,
     marketOptions,
     symbolOptions,
-    assetTypeOptions,
-    chartData
+    assetTypeOptions
   } = useMemo(() => {
     if (!rawData || rawData.length === 0) {
       return {
+        normalizedData: [],
         chainOptions: [],
         marketOptions: [],
         symbolOptions: [],
-        assetTypeOptions: [],
-        chartData: []
+        assetTypeOptions: []
       };
+    }
+
+    const uniqueChains = new Set<string>();
+    const uniqueMarkets = new Set<string>();
+    const uniqueSymbols = new Set<string>();
+    const uniqueAssetTypes = new Set<string>();
+    const marketMeta = new Map<
+      string,
+      { marketType: string; chains: Set<string> }
+    >();
+    const normalizedData: NormalizedItem[] = [];
+
+    for (const item of rawData) {
+      const network = item.source.network;
+      const marketName = item.source.market ?? NOT_MARKET;
+      const symbolName = item.source.asset.symbol;
+      const assetTypeName = item.source.asset.type;
+
+      uniqueChains.add(network);
+      uniqueMarkets.add(marketName);
+      uniqueSymbols.add(symbolName);
+      uniqueAssetTypes.add(assetTypeName);
+      let meta = marketMeta.get(marketName);
+      if (!meta) {
+        meta = { marketType: '', chains: new Set() };
+        marketMeta.set(marketName, meta);
+      }
+      if (!meta.marketType) {
+        meta.marketType = item.source.type?.split(' ')[1] ?? '';
+      }
+      meta.chains.add(network);
+
+      normalizedData.push({
+        date: item.date,
+        dateKey: formatDateInputValue(item.date),
+        value: item.value,
+        network,
+        marketName,
+        symbolName,
+        assetTypeName
+      });
+    }
+
+    const createOptions = (
+      uniqueValues: Set<string>,
+      key?: 'market'
+    ): OptionType[] => {
+      return Array.from(uniqueValues)
+        .sort((a, b) => a.localeCompare(b))
+        .map((value) => {
+          const option: OptionType = {
+            id: value,
+            label: capitalizeFirstLetter(value)
+          };
+
+          if (key === 'market') {
+            const meta = marketMeta.get(value);
+            option.marketType = meta?.marketType ?? '';
+            option.chain = meta ? Array.from(meta.chains) : [];
+          }
+
+          return option;
+        });
+    };
+
+    return {
+      normalizedData,
+      chainOptions: createOptions(uniqueChains),
+      symbolOptions: createOptions(uniqueSymbols),
+      assetTypeOptions: createOptions(uniqueAssetTypes),
+      marketOptions: createOptions(uniqueMarkets, 'market')
+    };
+  }, [rawData]);
+
+  const chartData = useMemo(() => {
+    if (!normalizedData.length) {
+      return [];
     }
 
     const selectedChainSet = new Set(selectedOptions.chain.map((c) => c.id));
@@ -236,56 +330,42 @@ const CompoundFeeRevenueRecieved = ({
     const isSymbolFilterActive = selectedSymbolSet.size > 0;
     const isAssetTypeFilterActive = selectedAssetTypeSet.size > 0;
 
-    const uniqueChains = new Set<string>();
-    const uniqueMarkets = new Set<string>();
-    const uniqueSymbols = new Set<string>();
-    const uniqueAssetTypes = new Set<string>();
     const groupedByDate: { [date: string]: StackedChartData } = {};
-    const groupByKeyPath = groupByPathMapping[groupBy];
+    const groupByField = groupByFieldMapping[groupBy];
 
-    const startSeconds = dateRange.startDate
-      ? toUtcDateSeconds(dateRange.startDate)
+    const startSeconds = deferredDateRange.startDate
+      ? toUtcDateSeconds(deferredDateRange.startDate)
       : null;
-    const endSeconds = dateRange.endDate
-      ? toUtcDateSeconds(dateRange.endDate, true)
+    const endSeconds = deferredDateRange.endDate
+      ? toUtcDateSeconds(deferredDateRange.endDate, true)
       : null;
 
-    for (const item of rawData) {
-      const network = item.source.network;
-      const marketName = item.source.market ?? NOT_MARKET;
-      const symbolName = item.source.asset.symbol;
-      const assetTypeName = item.source.asset.type;
-
-      uniqueChains.add(network);
-      uniqueMarkets.add(marketName);
-      uniqueSymbols.add(symbolName);
-      uniqueAssetTypes.add(assetTypeName);
-
+    for (const item of normalizedData) {
       if (startSeconds !== null && item.date < startSeconds) continue;
       if (endSeconds !== null && item.date > endSeconds) continue;
 
-      const chainMatch = !isChainFilterActive || selectedChainSet.has(network);
+      const chainMatch =
+        !isChainFilterActive || selectedChainSet.has(item.network);
       if (!chainMatch) continue;
 
       const marketMatch =
-        !isMarketFilterActive || selectedMarketSet.has(marketName);
+        !isMarketFilterActive || selectedMarketSet.has(item.marketName);
       if (!marketMatch) continue;
 
       const symbolMatch =
-        !isSymbolFilterActive || selectedSymbolSet.has(symbolName);
+        !isSymbolFilterActive || selectedSymbolSet.has(item.symbolName);
       if (!symbolMatch) continue;
 
       const assetTypeMatch =
-        !isAssetTypeFilterActive || selectedAssetTypeSet.has(assetTypeName);
+        !isAssetTypeFilterActive ||
+        selectedAssetTypeSet.has(item.assetTypeName);
       if (!assetTypeMatch) continue;
 
-      const date = new Date(item.date * 1000).toISOString().split('T')[0];
+      const date = item.dateKey;
 
-      let seriesKey: string;
-      if (groupBy === 'None') {
-        seriesKey = 'Total';
-      } else {
-        seriesKey = getValueByPath(item, groupByKeyPath) || NOT_MARKET;
+      let seriesKey = 'Total';
+      if (groupBy !== 'None' && groupByField) {
+        seriesKey = item[groupByField] || NOT_MARKET;
       }
 
       if (!groupedByDate[date]) {
@@ -296,46 +376,10 @@ const CompoundFeeRevenueRecieved = ({
         ((groupedByDate[date][seriesKey] as number) || 0) + item.value;
     }
 
-    const createOptions = (
-      uniqueValues: Set<string>,
-      key?: string
-    ): OptionType[] => {
-      return Array.from(uniqueValues)
-        .sort((a, b) => a.localeCompare(b))
-        .map((value) => {
-          const option: OptionType = {
-            id: value,
-            label: capitalizeFirstLetter(value)
-          };
-
-          if (key === 'market') {
-            const matches =
-              value === NOT_MARKET
-                ? rawData.filter((item) => item.source?.market == null)
-                : rawData.filter((item) => item.source?.market === value);
-
-            option.marketType = matches[0]?.source.type.split(' ')[1] ?? '';
-            option.chain = Array.from(
-              new Set(matches.map((item) => item.source.network))
-            );
-          }
-
-          return option;
-        });
-    };
-
-    const finalChartData = Object.values(groupedByDate).sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    return Object.values(groupedByDate).sort((a, b) =>
+      a.date.localeCompare(b.date)
     );
-
-    return {
-      chainOptions: createOptions(uniqueChains),
-      symbolOptions: createOptions(uniqueSymbols),
-      assetTypeOptions: createOptions(uniqueAssetTypes),
-      marketOptions: createOptions(uniqueMarkets, 'market'),
-      chartData: finalChartData
-    };
-  }, [dateRange, rawData, selectedOptions, groupBy]);
+  }, [deferredDateRange, groupBy, normalizedData, selectedOptions]);
 
   const {
     chartRef,
@@ -355,7 +399,7 @@ const CompoundFeeRevenueRecieved = ({
   });
 
   const barCount =
-    dateRange.startDate || dateRange.endDate
+    deferredDateRange.startDate || deferredDateRange.endDate
       ? aggregatedData.length
       : undefined;
 
