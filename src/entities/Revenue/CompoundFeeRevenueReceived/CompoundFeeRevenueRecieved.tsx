@@ -28,6 +28,9 @@ import { MultiSelect } from '@/shared/ui/AnimationProvider/MultiSelect/MultiSele
 import Button from '@/shared/ui/Button/Button';
 import Card from '@/shared/ui/Card/Card';
 import CSVDownloadButton from '@/shared/ui/CSVDownloadButton/CSVDownloadButton';
+import DateRangePicker, {
+  DateRangeValue
+} from '@/shared/ui/DateRangePicker/DateRangePicker';
 import Drawer from '@/shared/ui/Drawer/Drawer';
 import Icon from '@/shared/ui/Icon/Icon';
 import SingleDropdown from '@/shared/ui/SingleDropdown/SingleDropdown';
@@ -48,6 +51,25 @@ const groupByPathMapping: Record<string, string> = {
   'Asset Type': 'source.asset.type',
   Chain: 'source.network',
   Market: 'source.market'
+};
+
+const toUtcDateSeconds = (dateString: string, isEndOfDay = false) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+
+  if (!year || !month || !day) return null;
+
+  const startMs = Date.UTC(year, month - 1, day);
+
+  if (!isEndOfDay) {
+    return Math.floor(startMs / 1000);
+  }
+
+  const endMs = Date.UTC(year, month - 1, day + 1) - 1;
+  return Math.floor(endMs / 1000);
+};
+
+const formatDateInputValue = (timestampSeconds: number) => {
+  return new Date(timestampSeconds * 1000).toISOString().split('T')[0];
 };
 
 const getValueByPath = (obj: any, path: string): any => {
@@ -84,6 +106,12 @@ interface FiltersProps {
 
   csvData: Record<string, string | number>[];
 
+  dateRange: DateRangeValue;
+
+  minDate?: string;
+
+  maxDate?: string;
+
   selectedOptions: {
     chain: OptionType[];
 
@@ -103,6 +131,8 @@ interface FiltersProps {
   onSelectSymbol: (symbol: OptionType[]) => void;
 
   onBarSizeChange: (value: string) => void;
+
+  onDateRangeChange: (next: DateRangeValue) => void;
 
   toggleSingle: () => void;
 
@@ -124,6 +154,11 @@ const CompoundFeeRevenueRecieved = ({
 }: RevenuePageProps) => {
   const { barSize, onBarSizeChange } = useChartControls({
     initialBarSize: 'D'
+  });
+
+  const [dateRange, setDateRange] = useState<DateRangeValue>({
+    startDate: '',
+    endDate: ''
   });
 
   const [resetHiddenKey, setResetHiddenKey] = useState(0);
@@ -208,6 +243,13 @@ const CompoundFeeRevenueRecieved = ({
     const groupedByDate: { [date: string]: StackedChartData } = {};
     const groupByKeyPath = groupByPathMapping[groupBy];
 
+    const startSeconds = dateRange.startDate
+      ? toUtcDateSeconds(dateRange.startDate)
+      : null;
+    const endSeconds = dateRange.endDate
+      ? toUtcDateSeconds(dateRange.endDate, true)
+      : null;
+
     for (const item of rawData) {
       const network = item.source.network;
       const marketName = item.source.market ?? NOT_MARKET;
@@ -218,6 +260,9 @@ const CompoundFeeRevenueRecieved = ({
       uniqueMarkets.add(marketName);
       uniqueSymbols.add(symbolName);
       uniqueAssetTypes.add(assetTypeName);
+
+      if (startSeconds !== null && item.date < startSeconds) continue;
+      if (endSeconds !== null && item.date > endSeconds) continue;
 
       const chainMatch = !isChainFilterActive || selectedChainSet.has(network);
       if (!chainMatch) continue;
@@ -290,7 +335,7 @@ const CompoundFeeRevenueRecieved = ({
       marketOptions: createOptions(uniqueMarkets, 'market'),
       chartData: finalChartData
     };
-  }, [rawData, selectedOptions, groupBy]);
+  }, [dateRange, rawData, selectedOptions, groupBy]);
 
   const {
     chartRef,
@@ -309,6 +354,11 @@ const CompoundFeeRevenueRecieved = ({
     data: chartData
   });
 
+  const barCount =
+    dateRange.startDate || dateRange.endDate
+      ? aggregatedData.length
+      : undefined;
+
   const csvData = getSummarizedCsvData(aggregatedSeries);
 
   const deploymentOptionsFilter = useMemo(() => {
@@ -323,7 +373,9 @@ const CompoundFeeRevenueRecieved = ({
     selectedOptions.chain.length > 0 ||
     selectedOptions.market.length > 0 ||
     selectedOptions.symbol.length > 0 ||
-    selectedOptions.assetType.length > 0
+    selectedOptions.assetType.length > 0 ||
+    dateRange.startDate ||
+    dateRange.endDate
       ? 'No data for selected filters'
       : 'No data available';
 
@@ -385,7 +437,31 @@ const CompoundFeeRevenueRecieved = ({
     setGroupBy('Chain');
 
     setResetHiddenKey((k) => k + 1);
+    setDateRange({ startDate: '', endDate: '' });
   }, [initialState]);
+
+  const dateBounds = useMemo(() => {
+    if (!rawData || rawData.length === 0) {
+      return { min: '', max: '' };
+    }
+
+    let min = rawData[0].date;
+    let max = rawData[0].date;
+
+    rawData.forEach((item) => {
+      if (item.date < min) min = item.date;
+      if (item.date > max) max = item.date;
+    });
+
+    return {
+      min: formatDateInputValue(min),
+      max: formatDateInputValue(max)
+    };
+  }, [rawData]);
+
+  const onDateRangeChange = useCallback((next: DateRangeValue) => {
+    setDateRange(next);
+  }, []);
 
   return (
     <Card
@@ -412,12 +488,16 @@ const CompoundFeeRevenueRecieved = ({
         barSize={barSize}
         csvData={csvData}
         csvFilename={getCsvFileName('compound-fee-revenue-received')}
+        dateRange={dateRange}
+        minDate={dateBounds.min}
+        maxDate={dateBounds.max}
         openSingle={isGroupByOpen}
         onSelectChain={onSelectChain}
         onSelectAssetType={onSelectAssetType}
         onSelectMarket={onSelectMarket}
         onSelectSymbol={onSelectSymbol}
         onBarSizeChange={onBarSizeChange}
+        onDateRangeChange={onDateRangeChange}
         toggleSingle={onGroupByOpen}
         closeSingle={onGroupByClose}
         selectSingle={handleSelectGroupBy}
@@ -435,6 +515,7 @@ const CompoundFeeRevenueRecieved = ({
           customTooltipFormatter={customTooltipFormatter}
           customOptions={customChartOptions}
           chartRef={chartRef}
+          barCount={barCount}
           resetHiddenKey={resetHiddenKey}
           hiddenItems={hiddenItems}
           areAllSeriesHidden={areAllSeriesHidden}
@@ -461,6 +542,9 @@ const Filters = memo(
     csvData,
     csvFilename,
     chainOptions,
+    dateRange,
+    minDate,
+    maxDate,
     selectedOptions,
     isShowEyeIcon,
     areAllSeriesHidden,
@@ -473,6 +557,7 @@ const Filters = memo(
     onSelectMarket,
     onSelectSymbol,
     onBarSizeChange,
+    onDateRangeChange,
     toggleSingle,
     closeSingle,
     selectSingle,
@@ -534,7 +619,22 @@ const Filters = memo(
         onChange: onSelectSymbol
       };
 
+      const dateRangeFilterOptions = {
+        id: 'dateRange',
+        placeholder: 'Date range',
+        total: dateRange.startDate || dateRange.endDate ? 1 : 0,
+        selectedOptions: [],
+        options: [],
+        disableSelectAll: true,
+        type: 'dateRange' as const,
+        dateRange,
+        minDate,
+        maxDate,
+        onDateRangeChange
+      };
+
       return [
+        dateRangeFilterOptions,
         chainFilterOptions,
         marketFilterOptions,
         assetTypeFilterOptions,
@@ -543,7 +643,11 @@ const Filters = memo(
     }, [
       assetTypeOptions,
       chainOptions,
+      dateRange,
       deploymentOptionsFilter,
+      maxDate,
+      minDate,
+      onDateRangeChange,
       onSelectAssetType,
       onSelectChain,
       onSelectMarket,
@@ -569,6 +673,18 @@ const Filters = memo(
               value={barSize}
               onTabChange={onBarSizeChange}
               disabled={isLoading}
+            />
+            <DateRangePicker
+              value={dateRange}
+              min={minDate}
+              max={maxDate}
+              onChange={onDateRangeChange}
+              disabled={isLoading}
+              variant='popover'
+              showLabels
+              showClear
+              className='flex-col items-stretch gap-3'
+              inputClassName='w-full'
             />
             <MultiSelect
               options={chainOptions || []}

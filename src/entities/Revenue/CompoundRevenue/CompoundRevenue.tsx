@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useReducer } from 'react';
+import React, { useCallback, useMemo, useReducer, useState } from 'react';
 import { CSVLink } from 'react-csv';
 
 import CompoundRevenueChart from '@/components/Charts/CompoundRevenue/CompoundRevenueChart';
@@ -22,6 +22,9 @@ import { MultiSelect } from '@/shared/ui/AnimationProvider/MultiSelect/MultiSele
 import Button from '@/shared/ui/Button/Button';
 import Card from '@/shared/ui/Card/Card';
 import CSVDownloadButton from '@/shared/ui/CSVDownloadButton/CSVDownloadButton';
+import DateRangePicker, {
+  DateRangeValue
+} from '@/shared/ui/DateRangePicker/DateRangePicker';
 import Drawer from '@/shared/ui/Drawer/Drawer';
 import Icon from '@/shared/ui/Icon/Icon';
 import TabsGroup from '@/shared/ui/TabsGroup/TabsGroup';
@@ -60,6 +63,9 @@ interface FiltersProps {
   isLoading: boolean;
   csvFilename: string;
   csvData: Record<string, string | number>[];
+  dateRange: DateRangeValue;
+  minDate?: string;
+  maxDate?: string;
   selectedOptions: {
     chain: OptionType[];
     source: OptionType[];
@@ -71,6 +77,7 @@ interface FiltersProps {
   onSelectMarket: (deployment: OptionType[]) => void;
   onSelectSymbol: (symbol: OptionType[]) => void;
   onBarSizeChange: (value: string) => void;
+  onDateRangeChange: (next: DateRangeValue) => void;
   onClearAll: () => void;
 }
 
@@ -201,6 +208,11 @@ const CompoundRevenueBlock = ({
     initialBarSize: 'M'
   });
 
+  const [dateRange, setDateRange] = useState<DateRangeValue>({
+    startDate: '',
+    endDate: ''
+  });
+
   const { filterOptions, processedItems, initialAggregatedData, sortedDates } =
     useMemo(() => preprocessData(data || []), [data]);
 
@@ -214,7 +226,35 @@ const CompoundRevenueBlock = ({
     );
   }, [marketOptions, selectedOptions]);
 
+  const dateBounds = useMemo(() => {
+    if (!sortedDates.length) {
+      return { min: '', max: '' };
+    }
+
+    return {
+      min: sortedDates[0],
+      max: sortedDates[sortedDates.length - 1]
+    };
+  }, [sortedDates]);
+
   const processedChartData = useMemo(() => {
+    const hasRange = Boolean(dateRange.startDate || dateRange.endDate);
+    const isWithinRange = (date: string) => {
+      if (dateRange.startDate && date < dateRange.startDate) return false;
+      if (dateRange.endDate && date > dateRange.endDate) return false;
+      return true;
+    };
+
+    const rangeFilteredItems = hasRange
+      ? processedItems.filter((item) => isWithinRange(item.date))
+      : processedItems;
+    const rangeFilteredAggregates = hasRange
+      ? initialAggregatedData.filter((item) => isWithinRange(item.date))
+      : initialAggregatedData;
+    const rangeFilteredDates = hasRange
+      ? sortedDates.filter(isWithinRange)
+      : sortedDates;
+
     const hasActiveFilters =
       selectedOptions.chain.length > 0 ||
       selectedOptions.deployment.length > 0 ||
@@ -222,7 +262,7 @@ const CompoundRevenueBlock = ({
       selectedOptions.symbol.length > 0;
 
     if (!hasActiveFilters) {
-      return initialAggregatedData;
+      return rangeFilteredAggregates;
     }
 
     const activeFiltersById = {
@@ -234,7 +274,7 @@ const CompoundRevenueBlock = ({
 
     const dailyTotals: Record<string, number> = {};
 
-    for (const item of processedItems) {
+    for (const item of rangeFilteredItems) {
       if (
         activeFiltersById.chain.size > 0 &&
         !activeFiltersById.chain.has(item.chain)
@@ -260,13 +300,19 @@ const CompoundRevenueBlock = ({
     }
 
     const result: { date: string; Revenue: number }[] = [];
-    for (const date of sortedDates) {
+    for (const date of rangeFilteredDates) {
       if (dailyTotals[date] !== undefined) {
         result.push({ date, Revenue: dailyTotals[date] });
       }
     }
     return result;
-  }, [processedItems, initialAggregatedData, sortedDates, selectedOptions]);
+  }, [
+    dateRange,
+    processedItems,
+    initialAggregatedData,
+    sortedDates,
+    selectedOptions
+  ]);
 
   const { aggregatedData, aggregatedSeries, seriesData, chartRef } =
     useCompoundChartBars({
@@ -275,6 +321,11 @@ const CompoundRevenueBlock = ({
       customBarColor: '#4DEDB5'
     });
 
+  const barCount =
+    dateRange.startDate || dateRange.endDate
+      ? aggregatedData.length
+      : undefined;
+
   const csvData = getSummarizedCsvData(aggregatedSeries);
   const hasData = processedChartData.length > 0;
 
@@ -282,7 +333,9 @@ const CompoundRevenueBlock = ({
     selectedOptions.chain.length > 0 ||
     selectedOptions.deployment.length > 0 ||
     selectedOptions.source.length > 0 ||
-    selectedOptions.symbol.length > 0
+    selectedOptions.symbol.length > 0 ||
+    dateRange.startDate ||
+    dateRange.endDate
       ? 'No data for selected filters'
       : 'No data available';
 
@@ -329,6 +382,11 @@ const CompoundRevenueBlock = ({
       deployment: [],
       symbol: []
     });
+    setDateRange({ startDate: '', endDate: '' });
+  }, []);
+
+  const onDateRangeChange = useCallback((next: DateRangeValue) => {
+    setDateRange(next);
   }, []);
 
   return (
@@ -348,6 +406,9 @@ const CompoundRevenueBlock = ({
         csvData={csvData}
         csvFilename={getCsvFileName('compound_revenue')}
         chainOptions={chainOptions}
+        dateRange={dateRange}
+        minDate={dateBounds.min}
+        maxDate={dateBounds.max}
         selectedOptions={selectedOptions}
         deploymentOptionsFilter={deploymentOptionsFilter}
         sourceOptions={sourceOptions}
@@ -358,6 +419,7 @@ const CompoundRevenueBlock = ({
         onSelectMarket={onSelectMarket}
         onSelectSymbol={onSelectSymbol}
         onBarSizeChange={onBarSizeChange}
+        onDateRangeChange={onDateRangeChange}
         onClearAll={onClearSelectedOptions}
       />
       <View.Condition if={!isLoading && !isError && hasData}>
@@ -367,6 +429,7 @@ const CompoundRevenueBlock = ({
             seriesData={seriesData}
             aggregatedData={aggregatedData}
             barSize={barSize}
+            barCount={barCount}
           />
         </div>
       </View.Condition>
@@ -385,6 +448,9 @@ const Filters = ({
   csvData,
   csvFilename,
   chainOptions,
+  dateRange,
+  minDate,
+  maxDate,
   selectedOptions,
   deploymentOptionsFilter,
   sourceOptions,
@@ -395,6 +461,7 @@ const Filters = ({
   onSelectMarket,
   onSelectSymbol,
   onBarSizeChange,
+  onDateRangeChange,
   onClearAll
 }: FiltersProps) => {
   const { isOpen, onOpenModal, onCloseModal } = useModal();
@@ -444,16 +511,35 @@ const Filters = ({
       onChange: onSelectSymbol
     };
 
+    const dateRangeFilterOptions = {
+      id: 'dateRange',
+      placeholder: 'Date range',
+      total: dateRange.startDate || dateRange.endDate ? 1 : 0,
+      selectedOptions: [],
+      options: [],
+      disableSelectAll: true,
+      type: 'dateRange' as const,
+      dateRange,
+      minDate,
+      maxDate,
+      onDateRangeChange
+    };
+
     return [
+      dateRangeFilterOptions,
       chainFilterOptions,
       marketFilterOptions,
       sourceFilterOptions,
       symbolFilterOptions
     ];
   }, [
+    dateRange,
+    maxDate,
+    minDate,
     sourceOptions,
     chainOptions,
     deploymentOptionsFilter,
+    onDateRangeChange,
     onSelectSource,
     onSelectChain,
     onSelectMarket,
@@ -469,6 +555,18 @@ const Filters = ({
             value={barSize}
             onTabChange={onBarSizeChange}
             disabled={isLoading}
+          />
+          <DateRangePicker
+            value={dateRange}
+            min={minDate}
+            max={maxDate}
+            onChange={onDateRangeChange}
+            disabled={isLoading}
+            variant='popover'
+            showLabels
+            showClear
+            className='flex-col items-stretch gap-3'
+            inputClassName='w-full'
           />
           <div className='flex gap-2'>
             <MultiSelect
@@ -513,6 +611,18 @@ const Filters = ({
         </div>
         <div className='flex flex-col items-end justify-end gap-2 px-0 py-3 lg:hidden'>
           <div className='z-[1] flex items-center gap-2'>
+            <DateRangePicker
+              value={dateRange}
+              min={minDate}
+              max={maxDate}
+              onChange={onDateRangeChange}
+              disabled={isLoading}
+              variant='popover'
+              showLabels
+              showClear
+              className='flex-col items-stretch gap-3'
+              inputClassName='w-full'
+            />
             <MultiSelect
               options={chainOptions || []}
               value={selectedOptions.chain}
