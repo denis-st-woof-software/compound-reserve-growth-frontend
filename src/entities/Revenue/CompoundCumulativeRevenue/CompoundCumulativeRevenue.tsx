@@ -470,6 +470,7 @@ const CompoundCumulativeRevenue = ({
           showEvents={isShowEvents}
           customOptions={customChartOptions}
           customTooltipFormatter={customTooltipFormatter}
+          resetZoomKey={`${barSize}-${dateRange.startDate}-${dateRange.endDate}`}
           legends={legends}
           onSelectAllLegends={onSelectAllLegends}
           onDeselectAllLegends={onDeselectAllLegends}

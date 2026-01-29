@@ -56,6 +56,7 @@ interface LineChartProps {
   onLegendHover?: (id: string) => void;
   onLegendLeave?: (id?: string) => void;
   onLegendClick?: (id: string) => void;
+  resetZoomKey?: string;
 }
 
 const LineChart: FC<LineChartProps> = ({
@@ -74,7 +75,8 @@ const LineChart: FC<LineChartProps> = ({
   onShowEvents = noop,
   onLegendHover = noop,
   onLegendLeave = noop,
-  onLegendClick = noop
+  onLegendClick = noop,
+  resetZoomKey
 }) => {
   const programmaticChange = useRef(false);
 
@@ -105,6 +107,46 @@ const LineChart: FC<LineChartProps> = ({
 
   const isLastActiveLegend =
     legends.filter(({ isDisabled }) => !isDisabled).length === 1;
+
+  const dataExtremes = useMemo(() => {
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+
+    aggregatedSeries.forEach((series) => {
+      (series.data || []).forEach((point) => {
+        const x = Array.isArray(point)
+          ? Number(point[0])
+          : Number((point as { x?: number }).x);
+        if (!Number.isFinite(x)) return;
+        min = Math.min(min, x);
+        max = Math.max(max, x);
+      });
+    });
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return null;
+    }
+
+    return { min, max };
+  }, [aggregatedSeries]);
+
+  useEffect(() => {
+    if (resetZoomKey === undefined) return;
+    const chart = chartRef.current?.chart;
+    if (!chart || !dataExtremes) return;
+
+    const extremes = chart.xAxis[0].getExtremes();
+    if (
+      extremes.min === dataExtremes.min &&
+      extremes.max === dataExtremes.max
+    ) {
+      return;
+    }
+
+    currentZoom.current = null;
+    programmaticChange.current = true;
+    chart.xAxis[0].setExtremes(dataExtremes.min, dataExtremes.max, true, false);
+  }, [chartRef, dataExtremes, resetZoomKey]);
 
   useEffect(() => {
     const chart = chartRef.current?.chart;
