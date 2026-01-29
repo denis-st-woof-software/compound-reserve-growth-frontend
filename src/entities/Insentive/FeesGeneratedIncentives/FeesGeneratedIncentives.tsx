@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import Line from '@/components/Charts/Line/Line';
 import NoDataPlaceholder from '@/components/NoDataPlaceholder/NoDataPlaceholder';
@@ -21,6 +21,9 @@ import { CombinedIncentivesData } from '@/shared/types/Incentive/types';
 import { MultiSelect } from '@/shared/ui/AnimationProvider/MultiSelect/MultiSelect';
 import Card from '@/shared/ui/Card/Card';
 import CSVDownloadButton from '@/shared/ui/CSVDownloadButton/CSVDownloadButton';
+import DateRangePicker, {
+  DateRangeValue
+} from '@/shared/ui/DateRangePicker/DateRangePicker';
 import Switch from '@/shared/ui/Switch/Switch';
 import TabsGroup from '@/shared/ui/TabsGroup/TabsGroup';
 
@@ -30,9 +33,32 @@ interface FeesGeneratedIncentivesProps {
   isError: boolean;
 }
 
+const toUtcDateSeconds = (dateString: string, isEndOfDay = false) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+
+  if (!year || !month || !day) return null;
+
+  const startMs = Date.UTC(year, month - 1, day);
+
+  if (!isEndOfDay) {
+    return Math.floor(startMs / 1000);
+  }
+
+  const endMs = Date.UTC(year, month - 1, day + 1) - 1;
+  return Math.floor(endMs / 1000);
+};
+
+const formatDateInputValue = (timestampSeconds: number) => {
+  return new Date(timestampSeconds * 1000).toISOString().split('T')[0];
+};
+
 const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
   const { data, isLoading, isError } = props;
   const [isRevenueOnly, setIsRevenueOnly] = useState(false);
+  const [dateRange, setDateRange] = useState<DateRangeValue>({
+    startDate: '',
+    endDate: ''
+  });
   const groupBy = 'None';
 
   const { barSize, onBarSizeChange } = useChartControls({
@@ -48,7 +74,7 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
     onSelectMarket,
     filteredData,
     clearAllFilters,
-    mobileFilterOptions
+    mobileFilterOptions: mobileFilterOptionsFromHook
   } = useChainMarketFilters(data, { filterByLatestDate: false });
 
   useFiltersSync(selectedOptions, setSelectedOptions, 'fgvsi', [
@@ -67,7 +93,50 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
     setIsRevenueOnly
   );
 
-  const chartSeries = getGeneratedIncentivesChartSeries(filteredData);
+  const dateBounds = useMemo(() => {
+    if (!data.length) return { min: '', max: '' };
+
+    let min = data[0].date;
+    let max = data[0].date;
+
+    data.forEach((item) => {
+      if (item.date < min) min = item.date;
+      if (item.date > max) max = item.date;
+    });
+
+    return {
+      min: formatDateInputValue(min),
+      max: formatDateInputValue(max)
+    };
+  }, [data]);
+
+  const filteredDataByDate = useMemo(() => {
+    const hasRange = Boolean(dateRange.startDate || dateRange.endDate);
+    if (!hasRange) return filteredData;
+
+    const startSeconds = dateRange.startDate
+      ? toUtcDateSeconds(dateRange.startDate)
+      : null;
+    const endSeconds = dateRange.endDate
+      ? toUtcDateSeconds(dateRange.endDate, true)
+      : null;
+
+    if (startSeconds === null && endSeconds === null) return filteredData;
+
+    const normalizedStart = startSeconds;
+    const normalizedEnd =
+      startSeconds !== null && endSeconds !== null && startSeconds > endSeconds
+        ? null
+        : endSeconds;
+
+    return filteredData.filter((item) => {
+      if (normalizedStart !== null && item.date < normalizedStart) return false;
+      if (normalizedEnd !== null && item.date > normalizedEnd) return false;
+      return true;
+    });
+  }, [dateRange, filteredData]);
+
+  const chartSeries = getGeneratedIncentivesChartSeries(filteredDataByDate);
 
   const displaySeries = isRevenueOnly
     ? chartSeries.filter((series) => series.name === 'Revenue')
@@ -81,6 +150,31 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
   });
 
   const csvData = getSummarizedCsvData(aggregatedSeries);
+
+  const handleClearAll = useCallback(() => {
+    clearAllFilters();
+    setDateRange({ startDate: '', endDate: '' });
+  }, [clearAllFilters]);
+
+  const mobileFilterOptions = useCallback(
+    () => [
+      {
+        id: 'dateRange',
+        placeholder: 'Date range',
+        total: dateRange.startDate || dateRange.endDate ? 1 : 0,
+        selectedOptions: [],
+        options: [],
+        disableSelectAll: true,
+        type: 'dateRange' as const,
+        dateRange,
+        minDate: dateBounds.min,
+        maxDate: dateBounds.max,
+        onDateRangeChange: setDateRange
+      },
+      ...mobileFilterOptionsFromHook()
+    ],
+    [dateBounds.max, dateBounds.min, dateRange, mobileFilterOptionsFromHook]
+  );
 
   return (
     <Card
@@ -98,7 +192,7 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
         barSize={barSize}
         onBarSizeChange={onBarSizeChange}
         filterOptions={mobileFilterOptions}
-        onClearAll={clearAllFilters}
+        onClearAll={handleClearAll}
         csvData={csvData}
         isRevenueOnly={isRevenueOnly}
         setIsRevenueOnly={setIsRevenueOnly}
@@ -110,6 +204,18 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
             value={barSize}
             onTabChange={onBarSizeChange}
             disabled={isLoading}
+          />
+          <DateRangePicker
+            value={dateRange}
+            min={dateBounds.min}
+            max={dateBounds.max}
+            onChange={setDateRange}
+            disabled={isLoading}
+            variant='popover'
+            showLabels
+            showClear
+            className='flex-col items-stretch gap-3'
+            inputClassName='w-full'
           />
           <MultiSelect
             options={chainOptions || []}
@@ -148,6 +254,7 @@ const FeesGeneratedIncentives = (props: FeesGeneratedIncentivesProps) => {
           isLegendEnabled={false}
           groupBy={groupBy}
           aggregatedSeries={aggregatedSeries}
+          resetZoomKey={`${barSize}-${dateRange.startDate}-${dateRange.endDate}`}
           customOptions={customChartOptions}
           customTooltipFormatter={customTooltipFormatter}
         />
