@@ -31,6 +31,9 @@ import { MultiSelect } from '@/shared/ui/AnimationProvider/MultiSelect/MultiSele
 import Button from '@/shared/ui/Button/Button';
 import Card from '@/shared/ui/Card/Card';
 import CSVDownloadButton from '@/shared/ui/CSVDownloadButton/CSVDownloadButton';
+import DateRangePicker, {
+  DateRangeValue
+} from '@/shared/ui/DateRangePicker/DateRangePicker';
 import Drawer from '@/shared/ui/Drawer/Drawer';
 import { useDropdown } from '@/shared/ui/Dropdown/Dropdown';
 import Icon from '@/shared/ui/Icon/Icon';
@@ -45,6 +48,25 @@ const groupByMapping: Record<string, string> = {
   'Asset Type': 'assetType',
   Chain: 'chain',
   Market: 'deployment'
+};
+
+const toUtcDateSeconds = (dateString: string, isEndOfDay = false) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+
+  if (!year || !month || !day) return null;
+
+  const startMs = Date.UTC(year, month - 1, day);
+
+  if (!isEndOfDay) {
+    return Math.floor(startMs / 1000);
+  }
+
+  const endMs = Date.UTC(year, month - 1, day + 1) - 1;
+  return Math.floor(endMs / 1000);
+};
+
+const formatDateInputValue = (timestampSeconds: number) => {
+  return new Date(timestampSeconds * 1000).toISOString().split('T')[0];
 };
 
 interface TotalTreasuryValueProps {
@@ -64,6 +86,12 @@ interface FiltersProps {
   symbolOptions: OptionType[];
 
   barSize: BarSize;
+
+  dateRange: DateRangeValue;
+
+  minDate?: string;
+
+  maxDate?: string;
 
   showEvents: boolean;
 
@@ -102,6 +130,8 @@ interface FiltersProps {
   onSelectSymbol: (symbol: OptionType[]) => void;
 
   onBarSizeChange: (value: string) => void;
+
+  onDateRangeChange: (next: DateRangeValue) => void;
 
   openSingleDropdown: () => void;
 
@@ -158,12 +188,52 @@ const TotalTreasuryValue = ({
     initialBarSize: 'D'
   });
 
+  const [dateRange, setDateRange] = useState<DateRangeValue>({
+    startDate: '',
+    endDate: ''
+  });
+
   const rawData: ChartDataItem[] = useMemo(() => {
     if (!treasuryApiResponse) {
       return [];
     }
     return [...treasuryApiResponse].sort((a, b) => a.date - b.date);
   }, [treasuryApiResponse]);
+
+  const dateBounds = useMemo(() => {
+    if (!rawData.length) return { min: '', max: '' };
+
+    return {
+      min: formatDateInputValue(rawData[0].date),
+      max: formatDateInputValue(rawData[rawData.length - 1].date)
+    };
+  }, [rawData]);
+
+  const filteredRawData = useMemo(() => {
+    const hasRange = Boolean(dateRange.startDate || dateRange.endDate);
+    if (!hasRange) return rawData;
+
+    const startSeconds = dateRange.startDate
+      ? toUtcDateSeconds(dateRange.startDate)
+      : null;
+    const endSeconds = dateRange.endDate
+      ? toUtcDateSeconds(dateRange.endDate, true)
+      : null;
+
+    if (startSeconds === null && endSeconds === null) return rawData;
+
+    const normalizedStart = startSeconds;
+    const normalizedEnd =
+      startSeconds !== null && endSeconds !== null && startSeconds > endSeconds
+        ? null
+        : endSeconds;
+
+    return rawData.filter((item) => {
+      if (normalizedStart !== null && item.date < normalizedStart) return false;
+      if (normalizedEnd !== null && item.date > normalizedEnd) return false;
+      return true;
+    });
+  }, [dateRange, rawData]);
 
   const filterOptionsConfig = useMemo(
     () => ({
@@ -203,7 +273,7 @@ const TotalTreasuryValue = ({
   );
 
   const { chartSeries } = useChartDataProcessor({
-    rawData,
+    rawData: filteredRawData,
     filters: activeFilters,
     filterPaths: {
       chain: 'source.network',
@@ -342,6 +412,7 @@ const TotalTreasuryValue = ({
       deployment: [],
       symbol: []
     });
+    setDateRange({ startDate: '', endDate: '' });
   }, []);
 
   const onClearAll = useCallback(() => {
@@ -349,6 +420,10 @@ const TotalTreasuryValue = ({
 
     selectSingle('None');
   }, [onClearSelectedOptions, selectSingle]);
+
+  const onDateRangeChange = useCallback((next: DateRangeValue) => {
+    setDateRange(next);
+  }, []);
 
   return (
     <Card
@@ -377,12 +452,16 @@ const TotalTreasuryValue = ({
         barSize={barSize}
         csvData={csvData}
         csvFilename={getCsvFileName('total_treasury_value')}
+        dateRange={dateRange}
+        minDate={dateBounds.min}
+        maxDate={dateBounds.max}
         isOpenSingle={isOpenSingle}
         onSelectChain={onSelectChain}
         onSelectAssetType={onSelectAssetType}
         onSelectMarket={onSelectMarket}
         onSelectSymbol={onSelectSymbol}
         onBarSizeChange={onBarSizeChange}
+        onDateRangeChange={onDateRangeChange}
         openSingleDropdown={openSingleDropdown}
         closeSingle={closeSingle}
         selectSingle={selectSingle}
@@ -429,6 +508,9 @@ const Filters = memo(
     csvData,
     areAllSeriesHidden,
     chainOptions,
+    dateRange,
+    minDate,
+    maxDate,
     selectedOptions,
     deploymentOptionsFilter,
     assetTypeOptions,
@@ -439,6 +521,7 @@ const Filters = memo(
     onSelectMarket,
     onSelectSymbol,
     onBarSizeChange,
+    onDateRangeChange,
     openSingleDropdown,
     closeSingle,
     selectSingle,
@@ -492,11 +575,34 @@ const Filters = memo(
         onChange: onSelectAssetType
       };
 
-      return [chainFilterOptions, marketFilterOptions, assetTypeFilterOptions];
+      const dateRangeFilterOptions = {
+        id: 'dateRange',
+        placeholder: 'Date range',
+        total: dateRange.startDate || dateRange.endDate ? 1 : 0,
+        selectedOptions: [],
+        options: [],
+        disableSelectAll: true,
+        type: 'dateRange' as const,
+        dateRange,
+        minDate,
+        maxDate,
+        onDateRangeChange
+      };
+
+      return [
+        dateRangeFilterOptions,
+        chainFilterOptions,
+        marketFilterOptions,
+        assetTypeFilterOptions
+      ];
     }, [
       assetTypeOptions,
       chainOptions,
       deploymentOptionsFilter,
+      dateRange,
+      maxDate,
+      minDate,
+      onDateRangeChange,
       onSelectAssetType,
       onSelectChain,
       onSelectMarket,
@@ -671,6 +777,18 @@ const Filters = memo(
               value={barSize}
               onTabChange={onBarSizeChange}
               disabled={isLoading}
+            />
+            <DateRangePicker
+              value={dateRange}
+              min={minDate}
+              max={maxDate}
+              onChange={onDateRangeChange}
+              disabled={isLoading}
+              variant='popover'
+              showLabels
+              showClear
+              className='flex-col items-stretch gap-3'
+              inputClassName='w-full'
             />
             <MultiSelect
               options={chainOptions || []}
